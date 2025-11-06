@@ -54,7 +54,7 @@ Sistema de ejemplo para gestionar transacciones con **Transactional Outbox** + *
 
 Usa `appsettings.Development.json` o variables de entorno equivalentes:
 
-```json
+json
 {
   "ConnectionStrings": {
     "Postgres": "Host=localhost;Port=5432;Database=transactionsdb;Username=postgres;Password=postgres"
@@ -76,100 +76,66 @@ Usa `appsettings.Development.json` o variables de entorno equivalentes:
 
 ---
 
-## Variables / `appsettings` (ejemplo)
-
-Pasos manuales (arranque completo)
+## Pasos manuales (arranque completo)
 
 Ejecuta estos pasos desde la raíz del repositorio.
 
-1) Levantar infraestructura
-docker compose -f infra/docker-compose.yml up -d
+### 1) Levantar infraestructura
 
+* PowerShell
+  ```sh
+    docker compose -f infra/docker-compose.yml up -d
+  ```
 
 Validar contenedores/health:
 
-docker ps
-docker inspect --format "{{.Name}} => {{.State.Health.Status}}" zookeeper
-docker inspect --format "{{.Name}} => {{.State.Health.Status}}" kafka
-docker inspect --format "{{.Name}} => {{.State.Health.Status}}" postgres
+* PowerShell
+  ```sh
+    docker ps
+    docker inspect --format "{{.Name}} => {{.State.Health.Status}}" zookeeper
+    docker inspect --format "{{.Name}} => {{.State.Health.Status}}" kafka
+    docker inspect --format "{{.Name}} => {{.State.Health.Status}}" postgres
+  ```
 
-2) Crear/asegurar tópicos de Kafka
-docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.created.v1    --partitions 1 --replication-factor 1 --config retention.ms=86400000"
-docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.validated.v1  --partitions 1 --replication-factor 1 --config retention.ms=86400000"
-docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.created.dlq.v1 --partitions 1 --replication-factor 1 --config retention.ms=86400000"
+### 2) Crear/asegurar tópicos de Kafka
 
-# Listar para validar
-docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --list"
+* PowerShell
+  ```sh
+    docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.created.v1    --partitions 1 --replication-factor 1 --config retention.ms=86400000"
+    docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.validated.v1  --partitions 1 --replication-factor 1 --config retention.ms=86400000"
+    docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions.created.dlq.v1 --partitions 1 --replication-factor 1 --config retention.ms=86400000"
+    docker exec -it kafka bash -lc "kafka-topics --bootstrap-server localhost:9092 --list"
+  ```
 
-3) Aplicar scripts SQL
+### 3) Aplicar scripts SQL (BD)
 
-Rutas: infra/001_schema.sql y infra/002_outbox.sql.
+* PowerShell
+  ```sh
+    $env:PGPASSWORD="postgres"
+    type .\infra\001_schema.sql | docker exec -i postgres psql -U postgres -d transactionsdb -v "ON_ERROR_STOP=1" -q
+    type .\infra\002_outbox.sql | docker exec -i postgres psql -U postgres -d transactionsdb -v "ON_ERROR_STOP=1" -q
+    Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+  ```
 
-$env:PGPASSWORD="postgres"
-type .\infra\001_schema.sql | docker exec -i postgres psql -U postgres -d transactionsdb -v "ON_ERROR_STOP=1" -q
-type .\infra\002_outbox.sql | docker exec -i postgres psql -U postgres -d transactionsdb -v "ON_ERROR_STOP=1" -q
-Remove-Item Env:\PGPASSWORD -ErrorAction SilentlyContinue
+### 4) Levantar la API (Terminal 1)
 
+* PowerShell
+  ```sh
+    dotnet run --project src/Transactions.Api --no-launch-profile --urls http://0.0.0.0:5313
+  ```
+  
+### 5) Levantar el Antifraud Mock (Terminal 2)
 
-Validación rápida de la tabla outbox:
+* PowerShell
+  ```sh
+    dotnet run --project src/Antifraud.Mock
+  ```
 
-$check = @"
-SELECT column_name, data_type
-FROM information_schema.columns
-WHERE table_schema='public' AND table_name='outbox'
-ORDER BY ordinal_position;
-"@
-$check | docker exec -i postgres psql -U postgres -d transactionsdb -q
+### 6) Ejecutar la demo E2E (opcional)
 
-4) Levantar la API (Terminal 1)
-dotnet run --project src/Transactions.Api --no-launch-profile --urls http://0.0.0.0:5313
-
-
-Health (otra consola):
-
-Invoke-RestMethod http://127.0.0.1:5313/health
-
-5) Levantar el Antifraud Mock (Terminal 2)
-dotnet run --project src/Antifraud.Mock
-
-6) Ejecutar la demo E2E (opcional)
-
-El script infra/demo-transactions.ps1 crea transacciones y puede publicar a validated (según flags). Requiere la API arriba.
-
-.\infra\demo-transactions.ps1
-# (opcional) forzar publicación a validated:
-# .\infra\demo-transactions.ps1 -PublishValidated
-
-Endpoints principales
-Health
-GET /health
-200 OK
-{ "ok": true }
-
-Crear transacción
-POST /api/transactions
-Headers:
-  Content-Type: application/json
-  Idempotency-Key: <string>
-Body:
-{
-  "sourceAccountId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  "targetAccountId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-  "transferTypeId": 1,
-  "value": 100
-}
-201 Created
-{
-  "transactionExternalId": "<guid>",
-  "status": "pending",
-  "createdAt": "2025-01-01T00:00:00Z"
-}
-
-Obtener por ID
-GET /api/transactions/{id}
-200 OK
-{
-  "externalId": "<guid>",
-  "status": "approved|rejected|pending",
-  "createdAt": "2025-01-01T00:00:00Z"
-}
+* PowerShell
+  ```sh
+    .\infra\demo-transactions.ps1
+    # (opcional) forzar publicación a validated:
+    # .\infra\demo-transactions.ps1 -PublishValidated
+  ```
